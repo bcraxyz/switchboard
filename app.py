@@ -3,10 +3,7 @@ import streamlit as st
 from google.api_core.client_options import ClientOptions
 from google.cloud import discoveryengine_v1 as discoveryengine
 
-# ── Page config ──────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Agent Chat", page_icon="💬", layout="wide")
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Switchboard", page_icon="💬", layout="wide")
 
 def get_client(location: str):
     client_options = (
@@ -48,25 +45,32 @@ def stream_assist(project: str, location: str, engine_id: str, query: str):
         query=discoveryengine.Query(text=query),
     )
     for response in client.stream_assist(request=request):
-        yield str(response)
+        if response.replies:
+            for reply in response.replies:
+                if reply.grounded_content and reply.grounded_content.content.parts:
+                    for part in reply.grounded_content.content.parts:
+                        if part.text:
+                            yield part.text
+        
+        elif response.answer and response.answer.answer_text:
+            yield response.answer.answer_text
 
 
-# ── Sidebar – connection settings ────────────────────────────────────────────
 with st.sidebar:
-    st.title("⚙️ Settings")
+    st.title("💬 Switchboard")
 
     project = st.text_input(
-        "GCP Project ID",
+        "Google Cloud Project",
         value=os.getenv("GOOGLE_CLOUD_PROJECT", ""),
         placeholder="your-project-id",
     )
     location = st.text_input(
-        "Location",
-        value=os.getenv("GOOGLE_CLOUD_LOCATION", "global"),
-        placeholder="global / us / eu",
+        "Google Cloud Location",
+        value=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        placeholder="us-central1",
     )
     engine_location = st.text_input(
-        "Engine Location",
+        "Discovery Engine Location",
         value=os.getenv("ENGINE_LOCATION", "global"),
         placeholder="global / us / eu",
     )
@@ -77,7 +81,7 @@ with st.sidebar:
         if not project or not engine_location:
             st.error("Please fill in Project ID and Engine Location first.")
         else:
-            with st.spinner("Fetching engines…"):
+            with st.spinner("Fetching discovery engines…"):
                 try:
                     engines = list_engines(project, engine_location)
                     st.session_state["engines"] = engines
@@ -91,18 +95,8 @@ with st.sidebar:
     engines = st.session_state.get("engines", [])
     if engines:
         options = {e["display_name"]: e["id"] for e in engines}
-        selected_name = st.selectbox("Select Engine", list(options.keys()))
+        selected_name = st.selectbox("Discovery Engine", list(options.keys()))
         st.session_state["engine_id"] = options[selected_name]
-
-    # Quick status indicator
-    if st.session_state.get("engine_id"):
-        st.success(f"Active: `{st.session_state['engine_id']}`")
-    else:
-        st.info("Load engines and select one to start chatting.")
-
-
-# ── Main chat area ────────────────────────────────────────────────────────────
-st.title("💬 Agent Chat")
 
 # Initialise chat history
 if "messages" not in st.session_state:
