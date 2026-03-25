@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 from google.api_core.client_options import ClientOptions
-from google.cloud import discoveryengine_v1 as discoveryengine
+from google.cloud import discoveryengine_v1beta as discoveryengine
 
 st.set_page_config(page_title="Switchboard", page_icon="💬", layout="wide")
 
@@ -26,13 +26,13 @@ def list_engines(project: str, location: str) -> list[dict]:
 
 
 def stream_assist(project: str, location: str, engine_id: str, query: str):
-    """Call StreamAssist and yield response chunks as strings."""
     client_options = (
         ClientOptions(api_endpoint=f"{location}-discoveryengine.googleapis.com")
         if location != "global"
         else None
     )
     client = discoveryengine.AssistantServiceClient(client_options=client_options)
+    
     assistant_name = client.assistant_path(
         project=project,
         location=location,
@@ -40,22 +40,34 @@ def stream_assist(project: str, location: str, engine_id: str, query: str):
         engine=engine_id,
         assistant="default_assistant",
     )
+
+    datastore_name = f"projects/{project}/locations/{location}/collections/default_collection/dataStores/entra-search_userprofiles"
+    
+    tools_spec = discoveryengine.Tool(
+        vertex_ai_search=discoveryengine.Tool.VertexAiSearch(
+            data_store=datastore_name
+        )
+    )
+
     request = discoveryengine.StreamAssistRequest(
         name=assistant_name,
         query=discoveryengine.Query(text=query),
+        # Pass the tools directly into the request just like the UI does
+        tools=[tools_spec] 
     )
+
     for response in client.stream_assist(request=request):
-        if response.replies:
-            for reply in response.replies:
-                if reply.grounded_content and reply.grounded_content.content.parts:
-                    for part in reply.grounded_content.content.parts:
-                        if part.text:
-                            yield part.text
-        
-        elif response.answer and response.answer.answer_text:
-            yield response.answer.answer_text
-
-
+        # 2. Extract the text, but ignore the "thoughts"
+        if response.answer and response.answer.replies:
+            for reply in response.answer.replies:
+                content = reply.grounded_content.content
+                
+                # Check if this chunk is an internal thought
+                is_thought = getattr(content, "thought", False) 
+                
+                # Only yield the actual answer text (the table)
+                if content.text and not is_thought:
+                    yield content.text
 with st.sidebar:
     st.title("💬 Switchboard")
 
