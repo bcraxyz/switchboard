@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 from google.api_core.client_options import ClientOptions
-from google.cloud import discoveryengine_v1beta as discoveryengine
+from google.cloud import discoveryengine_v1 as discoveryengine
 
 st.set_page_config(page_title="Switchboard", page_icon="💬", layout="wide")
 
@@ -26,6 +26,7 @@ def list_engines(project: str, location: str) -> list[dict]:
 
 
 def stream_assist(project: str, location: str, engine_id: str, query: str):
+    """Call StreamAssist and yield response chunks as strings."""
     client_options = (
         ClientOptions(api_endpoint=f"{location}-discoveryengine.googleapis.com")
         if location != "global"
@@ -41,33 +42,47 @@ def stream_assist(project: str, location: str, engine_id: str, query: str):
         assistant="default_assistant",
     )
 
+    # 1. Replicate the UI's toolsSpec using the v1 SDK structure
+    # NOTE: Ensure 'entra-search_userprofiles' is your exact Data Store ID
     datastore_name = f"projects/{project}/locations/{location}/collections/default_collection/dataStores/entra-search_userprofiles"
     
-    tools_spec = discoveryengine.Tool(
-        vertex_ai_search=discoveryengine.Tool.VertexAiSearch(
-            data_store=datastore_name
+    tools_spec = discoveryengine.StreamAssistRequest.ToolsSpec(
+        vertex_ai_search_spec=discoveryengine.StreamAssistRequest.ToolsSpec.VertexAiSearchSpec(
+            data_store_specs=[
+                discoveryengine.StreamAssistRequest.ToolsSpec.VertexAiSearchSpec.DataStoreSpec(
+                    data_store=datastore_name
+                )
+            ]
         )
     )
 
+    # 2. Attach the tools_spec directly to the request
     request = discoveryengine.StreamAssistRequest(
         name=assistant_name,
         query=discoveryengine.Query(text=query),
-        # Pass the tools directly into the request just like the UI does
-        tools=[tools_spec] 
+        tools_spec=tools_spec 
     )
 
     for response in client.stream_assist(request=request):
-        # 2. Extract the text, but ignore the "thoughts"
+        # 3. Extract the text, explicitly ignoring the Chain-of-Thought
         if response.answer and response.answer.replies:
             for reply in response.answer.replies:
                 content = reply.grounded_content.content
                 
-                # Check if this chunk is an internal thought
+                # Check if this chunk is an internal thought (e.g. "Reiterating Tool Use")
                 is_thought = getattr(content, "thought", False) 
+                if is_thought:
+                    continue # Skip to the next chunk
                 
-                # Only yield the actual answer text (the table)
-                if content.text and not is_thought:
+                # Yield only the actual user-facing text
+                # (Checking both 'text' and 'parts' as minor SDK versions handle this payload slightly differently)
+                if hasattr(content, "text") and content.text:
                     yield content.text
+                elif hasattr(content, "parts"):
+                    for part in content.parts:
+                        if hasattr(part, "text") and part.text:
+                            yield part.text
+                            
 with st.sidebar:
     st.title("💬 Switchboard")
 
